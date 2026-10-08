@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+*.tmp
+.DS_Store
+# Runtime data lives in ~/.luna, never in the repo
+.luna/
+# Local dev scratch
+scratch/

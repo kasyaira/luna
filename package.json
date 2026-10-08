@@ -1,0 +1,53 @@
+{
+  "name": "luna-ai",
+  "version": "1.0.0",
+  "description": "Luna — self-evolving AI terminal agent. Parallel memory, self-modification, self-installing skills, self-healing. Zero dependencies, works out of the box with keyless AI endpoints.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "luna": "bin/luna.js"
+  },
+  "directories": {
+    "bin": "./bin",
+    "src": "./src",
+    "skills": "./skills",
+    "docs": "./docs"
+  },
+  "scripts": {
+    "start": "node bin/luna.js",
+    "test": "node bin/test.js",
+    "doctor": "node bin/luna.js doctor",
+    "chat": "node bin/luna.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "terminal",
+    "cli",
+    "llm",
+    "self-modifying",
+    "self-healing",
+    "memory",
+    "skills",
+    "pollinations",
+    "ollama",
+    "openai-compatible"
+  ],
+  "author": "kasyaira",
+  "license": "MIT",
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kasyaira/luna"
+  }
+}
