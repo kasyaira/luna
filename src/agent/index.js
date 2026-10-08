@@ -1,4 +1,6 @@
 // Luna — the agent herself: ties memory, skills, tools, providers, loop.
+import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { MemoryManager } from '../memory/index.js';
 import { ToolRegistry } from '../tools/index.js';
 import { AgentLoop } from './loop.js';
@@ -7,7 +9,7 @@ import { loadSkills, matchSkills, loadSkillTools } from '../skills/index.js';
 import { detectLocal, chat } from '../providers/router.js';
 import { log } from '../util/log.js';
 import { errMessage } from '../util/async.js';
-import { IDENTITY } from '../constants.js';
+import { IDENTITY, LUNA_ROOT } from '../constants.js';
 
 export class LunaAgent {
   constructor(cfg) {
@@ -25,6 +27,8 @@ export class LunaAgent {
       cfg,
       onSkillActivated: (skill, tools) => this.activateSkill(skill, tools),
       reloadHook: () => this.reload(),
+      restartHook: () => this.requestRestart(),
+      upgradeHook: (opts) => this.upgrade(opts),
     });
     this.loop = new AgentLoop({ cfg, toolRegistry: this.registry, ui: null });
   }
@@ -128,6 +132,12 @@ export class LunaAgent {
     result.ms = Date.now() - t0;
     result.turn = this.turn;
     if (skillNote) result.skillNote = skillNote;
+
+    // self.upgrade / self.restart may have requested a relaunch — do it after the reply
+    if (this.pendingRestart) {
+      const note = this._maybeRestart();
+      if (note) result.restart = note;
+    }
     return result;
   }
 
@@ -153,7 +163,9 @@ export class LunaAgent {
   async reload() {
     const notes = [];
     for (const mod of ['agent/index.js', 'agent/loop.js', 'agent/context.js', 'tools/index.js',
-      'providers/router.js', 'providers/openai-compat.js', 'memory/index.js', 'skills/index.js']) {
+      'providers/router.js', 'providers/openai-compat.js', 'providers/vision.js',
+      'tools/vision.js', 'tools/screen.js', 'tools/input.js',
+      'memory/index.js', 'skills/index.js']) {
       try {
         await import(`../${mod}?t=${Date.now()}`);
         notes.push(`ok ${mod}`);
@@ -163,10 +175,56 @@ export class LunaAgent {
     }
     return {
       ok: true,
-      note: 'modules re-imported with cache-busting; a restart (`luna`) guarantees a clean state. Memory persisted.',
+      note: 'modules re-imported with cache-busting; run self.restart for a guaranteed clean relaunch. Memory persisted.',
       modules: notes,
       identity: `${IDENTITY.name} v${IDENTITY.version}`,
     };
+  }
+
+  /** Schedule a relaunch (spawn new process, keep terminal). Returns tool result. */
+  requestRestart() {
+    this.pendingRestart = true;
+    return {
+      ok: true,
+      note: 'relaunching with fresh code right after this reply — the terminal stays, memories & config persist in ~/.luna',
+    };
+  }
+
+  /** Real self-upgrade: apply newest code, schedule restart. Returns tool result. */
+  async upgrade(opts = {}) {
+    const { applyUpgrade } = await import('../healing/upgrade.js');
+    let report;
+    try {
+      report = await applyUpgrade(opts);
+    } catch (err) {
+      return { ok: false, error: `upgrade crashed: ${errMessage(err)}` };
+    }
+    if (report.ok) {
+      this.pendingRestart = true;
+      report.restart = 'scheduled — relaunching after this reply';
+    }
+    return report;
+  }
+
+  /** Spawn a fresh Luna on the same TTY, then exit. Returns a user-facing note. */
+  _maybeRestart() {
+    this.pendingRestart = false;
+    const entry = path.join(LUNA_ROOT, 'bin', 'luna.js');
+    try {
+      const child = spawn(process.execPath, [entry], {
+        stdio: 'inherit',
+        detached: true,
+        cwd: LUNA_ROOT,
+        env: { ...process.env },
+      });
+      child.unref();
+      log.info('agent', `restart: spawned fresh instance (pid ${child.pid})`);
+      setTimeout(() => process.exit(0), 300);
+      return '✦ relaunching with fresh code…';
+    } catch (err) {
+      log.warn('agent', `restart failed: ${errMessage(err)}`);
+      return null;
+    }
   }
 
   sessionInfo() {

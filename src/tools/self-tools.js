@@ -5,6 +5,8 @@ import path from 'node:path';
 import { LUNA_ROOT } from '../constants.js';
 import { checkSyntax, checkTree } from '../healing/validator.js';
 import { backupFile, snapshot, listSnapshots, rollback, restoreFile } from '../healing/recovery.js';
+import { sensorReport } from '../util/sensors.js';
+import { visionStatus } from '../providers/vision.js';
 import { resolvePath } from './fs-tools.js';
 import { truncateMiddle } from '../util/json.js';
 import { log } from '../util/log.js';
@@ -19,7 +21,7 @@ function toSelfRelative(p) {
   return { outside: false, abs, rel };
 }
 
-export function makeSelfTools({ reloadHook } = {}) {
+export function makeSelfTools({ reloadHook, restartHook, upgradeHook } = {}) {
   return [
     {
       name: 'self.list',
@@ -144,6 +146,51 @@ export function makeSelfTools({ reloadHook } = {}) {
       },
     },
     {
+      name: 'self.restart',
+      description: 'Relaunch Luna with fresh code (spawn a new process, keep the terminal). Use after self.patch/self.upgrade so changes take effect immediately — memories and config persist in ~/.luna.',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async () => {
+        if (typeof restartHook === 'function') return restartHook();
+        return { ok: false, error: 'restart hook not available in this context — run `luna` again instead' };
+      },
+    },
+    {
+      name: 'self.upgrade',
+      description: 'Upgrade Luna\'s own code from the latest release (GitHub) or a local zip, then relaunch. Auto: git pull when a git checkout, otherwise downloads the GitHub main zip. Snapshot + integrity check + auto-rollback included. THIS is how you gain new abilities.',
+      parameters: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: '"auto" (default) · "git" · "github" (zip from GitHub main) · an https URL to a zip · or a local path to a zip file' },
+        },
+        required: [],
+      },
+      execute: async ({ source } = {}) => {
+        if (typeof upgradeHook === 'function') return upgradeHook({ source: source || 'auto' });
+        return { ok: false, error: 'upgrade hook not available — run: luna upgrade' };
+      },
+    },
+    {
+      name: 'self.sensors',
+      description: 'Body report: display server, webcams, input backends (mouse/keyboard), screenshot & capture backends, vision model availability, with install hints. Check this when eyes/hands fail, and to answer "what can you do right now?".',
+      parameters: { type: 'object', properties: {}, required: [] },
+      execute: async (_args, { cfg } = {}) => {
+        const sensors = sensorReport();
+        const vision = await visionStatus(cfg || {}).catch(() => ({ available: false, candidates: [] }));
+        return {
+          version: IDENTITY.version,
+          display: sensors.display,
+          eyes: {
+            ...sensors.eyes,
+            visionModels: vision.candidates,
+            keylessVision: vision.keyless,
+            localVision: vision.local,
+          },
+          hands: sensors.hands,
+          installHints: sensors.installHints,
+        };
+      },
+    },
+    {
       name: 'self.info',
       description: 'Identity & environment info: version, root, node version, platform, config.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -155,6 +202,7 @@ export function makeSelfTools({ reloadHook } = {}) {
         platform: `${process.platform}/${process.arch}`,
         pid: process.pid,
         cwd: process.cwd(),
+        body: 'eyes: vision.*, screen.* · hands: input.* · upgrade: self.upgrade',
       }),
     },
   ];

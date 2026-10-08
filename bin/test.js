@@ -36,9 +36,12 @@ await test('all modules import cleanly', async () => {
   const mods = [
     '../src/constants.js', '../src/config.js',
     '../src/util/ansi.js', '../src/util/async.js', '../src/util/json.js', '../src/util/log.js', '../src/util/tokens.js',
+    '../src/util/sensors.js',
     '../src/providers/registry.js', '../src/providers/openai-compat.js', '../src/providers/router.js',
+    '../src/providers/vision.js',
     '../src/memory/store.js', '../src/memory/retrieve.js', '../src/memory/index.js',
     '../src/healing/validator.js', '../src/healing/recovery.js', '../src/healing/supervisor.js',
+    '../src/healing/upgrade.js',
     '../src/tools/index.js',
     '../src/skills/index.js',
     '../src/agent/context.js', '../src/agent/loop.js', '../src/agent/index.js',
@@ -258,6 +261,109 @@ await test('tokens: fitHistory trims under budget', async () => {
   eq(messages[0].role, 'system', 'system must survive');
 });
 
+// ---- v1.1.0: eyes & hands ----
+await test('sensors: display server detection is pure (X11/Wayland/none)', async () => {
+  const { displayServer, hasGui } = await import('../src/util/sensors.js');
+  eq(displayServer({ XDG_SESSION_TYPE: 'x11', DISPLAY: ':1' }), 'x11');
+  eq(displayServer({ XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }), 'wayland');
+  eq(displayServer({ XDG_SESSION_TYPE: 'tty' }), 'tty');
+  eq(displayServer({}), 'none');
+  eq(hasGui({ XDG_SESSION_TYPE: 'x11', DISPLAY: ':1' }), true);
+  eq(hasGui({ XDG_SESSION_TYPE: 'x11' }), false, 'x11 without DISPLAY has no reachable GUI');
+  eq(hasGui({ XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }), true);
+});
+
+await test('sensors: report shape has display/eyes/hands + install hints', async () => {
+  const { sensorReport } = await import('../src/util/sensors.js');
+  const r = sensorReport();
+  for (const key of ['display', 'eyes', 'hands', 'installHints']) {
+    assert(key in r, `missing key ${key}`);
+  }
+  assert(Array.isArray(r.eyes.cameras), 'eyes.cameras must be array');
+  assert(typeof r.hands.canType === 'boolean', 'hands.canType must be boolean');
+});
+
+await test('input: key combo whitelist accepts valid, rejects injection', async () => {
+  const { sanitizeKeyCombo } = await import('../src/tools/input.js');
+  eq(sanitizeKeyCombo('ctrl+shift+t').keys, 'ctrl+shift+t');
+  eq(sanitizeKeyCombo('ENTER').keys, 'Return');
+  eq(sanitizeKeyCombo('alt+F4').keys, 'alt+F4');
+  eq(sanitizeKeyCombo('esc').keys, 'Escape');
+  eq(sanitizeKeyCombo('win').keys, 'super');
+  // injection attempts must fail (no shell metachars, no unknown keys)
+  for (const bad of ['ctrl+c; rm -rf /', 'ctrl+$(reboot)', 'alt+`id`', 'ctrl+ctrl+ctrl+ctrl+ctrl+ctrl+ctrl', '']) {
+    assert(sanitizeKeyCombo(bad).error, `should reject: ${JSON.stringify(bad)}`);
+  }
+});
+
+await test('input: mouse command builders clamp numbers & quote text', async () => {
+  const { buildXdoMouse, buildXdoType, shellQuote } = await import('../src/tools/input.js');
+  const mv = buildXdoMouse({ action: 'move', x: 99999999, y: -5 });
+  assert(mv.cmd.includes('100000 0'), `numbers must be clamped: ${mv.cmd}`);
+  const cl = buildXdoMouse({ action: 'click', x: 100, y: 200, button: 'right' });
+  assert(cl.cmd.includes('mousemove --sync 100 200') && cl.cmd.includes('click 3'), `click cmd: ${cl.cmd}`);
+  const dr = buildXdoMouse({ action: 'drag', from: { x: 1, y: 2 }, to: { x: 3, y: 4 } });
+  assert(/mousedown 1/.test(dr.cmd) && /mouseup 1/.test(dr.cmd), 'drag must press+release');
+  eq(buildXdoMouse({ action: 'move', y: 10 }).error !== undefined, true, 'move without x must error');
+  const ty = buildXdoType("it's a $test `;rm -rf` line", 40);
+  // shellQuote wraps in single quotes and escapes embedded quotes as '\''
+  const quoted = "'it'\\''s a $test `;rm -rf` line'";
+  assert(ty.cmd.includes(quoted), `type text must be shell-quoted: ${ty.cmd}`);
+  assert(!/; rm/.test(ty.cmd.replace(quoted, '')), 'no unquoted shell metachars outside the quoted text');
+  eq(shellQuote("a'b"), "'a'\\''b'", 'shellQuote escapes single quotes');
+});
+
+await test('tool registry: v1.1.0 eyes & hands tools registered', async () => {
+  const { ToolRegistry } = await import('../src/tools/index.js');
+  const { MemoryManager } = await import('../src/memory/index.js');
+  const reg = new ToolRegistry({ memory: new MemoryManager({}), cfg: {} });
+  const names = reg.names();
+  for (const expected of [
+    'vision.devices', 'vision.capture', 'vision.look', 'vision.analyze',
+    'screen.capture', 'screen.look',
+    'input.mouse', 'input.type', 'input.key', 'input.position', 'input.windows',
+    'self.sensors', 'self.restart', 'self.upgrade',
+  ]) {
+    assert(names.includes(expected), `missing v1.1.0 tool ${expected}`);
+  }
+  // schemas stay OpenAI-shaped for the new tools too
+  for (const s of reg.openAiSchemas()) {
+    assert(s.function.name && s.function.description, `schema missing name/description: ${JSON.stringify(s).slice(0, 80)}`);
+  }
+});
+
+await test('provider registry: kilo keyless vision endpoint present', async () => {
+  assert(PROVIDER_BY_ID.kilo, 'kilo provider missing');
+  eq(PROVIDER_BY_ID.kilo.kind, 'keyless');
+  assert((PROVIDER_BY_ID.kilo.visionModels || []).includes('dots-studio/dots-3-note-preview:free'), 'kilo vision model missing');
+});
+
+await test('vision router: keyless candidates include kilo (no keys, offline discovery)', async () => {
+  const { visionCandidates } = await import('../src/providers/vision.js');
+  const candidates = await visionCandidates({});
+  assert(candidates.some((c) => c.id === 'kilo' && c.kind === 'keyless'), `kilo not in candidates: ${JSON.stringify(candidates)}`);
+});
+
+await test('context builder: BODY section appears when eyes/hands tools present', async () => {
+  const { buildSystemContext } = await import('../src/agent/context.js');
+  const sys = buildSystemContext({
+    cfg: {}, memoriesText: null, activeSkill: null, jsonProtocol: true, cwd: '/tmp', sessionTurn: 1,
+    toolNames: ['think', 'fs.read', 'vision.look', 'screen.look', 'input.mouse', 'input.type'],
+  });
+  assert(/BODY — EYES & HANDS/.test(sys), 'BODY section missing');
+  assert(/screen\.look/.test(sys) && /input\.mouse/.test(sys), 'body guidance must name the tools');
+  const sysPlain = buildSystemContext({
+    cfg: {}, memoriesText: null, activeSkill: null, jsonProtocol: true, cwd: '/tmp', sessionTurn: 1,
+    toolNames: ['think', 'fs.read'],
+  });
+  assert(!/BODY — EYES & HANDS/.test(sysPlain), 'BODY must not appear without eyes/hands tools');
+});
+
+await test('upgrade module: release zip points at kasyaira/luna', async () => {
+  const { RELEASE_ZIP } = await import('../src/healing/upgrade.js');
+  assert(RELEASE_ZIP.includes('github.com/kasyaira/luna'), `unexpected zip url: ${RELEASE_ZIP}`);
+});
+
 // ---- network (optional) ----
 if (WITH_NET) {
   await test('NET: pollinations keyless chat responds', async () => {
@@ -268,6 +374,18 @@ if (WITH_NET) {
       temperature: 0,
     });
     assert(res.content && res.content.length > 0, `no content: ${JSON.stringify(res).slice(0, 200)}`);
+  });
+
+  await test('NET: kilo keyless VISION describes a test image', async () => {
+    const { describeImage } = await import('../src/providers/vision.js');
+    // 1x1 red JPEG (valid, tiny) — proves image input round-trips
+    const tinyJpegB64 = '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPDIzNP/AABEIAAEAAQMBIgACEQEDEQH/xAAfAAABBQEBAQEBAQAAAAAAAAABAgMEBQYHCAkKC//EALUAAAEFAQEBAQEBAAAAAAAAAAAAAgMEAQUGBwgJCgEAAgIBAwMCAwMCAQQAAwAAAAECcQMhEUEyUWEiMoGRBQjQYRxQUIHYjNiVAKCM0J/8QAGAEAAwQBAQAAAAAAAAAAAAAAAAECAwT/xAAcEQEAAQMFAQEAAAAAAAAAAAECEQMEEiExQVETcYH/2gAMAwEAAhEDEQA/AJYA//9k=';
+    const res = await describeImage({}, {
+      imageBase64: tinyJpegB64, mimeType: 'image/jpeg',
+      prompt: 'What is the dominant color of this image? One word.',
+    });
+    assert(res.description && res.description.length > 0, `vision failed: ${JSON.stringify(res).slice(0, 300)}`);
+    assert(!res.error, `vision error: ${res.error}`);
   });
 
   await test('NET: provider router chat() end-to-end', async () => {

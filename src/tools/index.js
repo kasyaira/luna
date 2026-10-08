@@ -7,6 +7,9 @@ import { fsTools } from './fs-tools.js';
 import { makeMemoryTools } from './memory-tools.js';
 import { makeSkillTools } from './skill-tools.js';
 import { makeSelfTools } from './self-tools.js';
+import { makeVisionTools } from './vision.js';
+import { makeScreenTools } from './screen.js';
+import { makeInputTools } from './input.js';
 import { gitTools } from './git-tools.js';
 import { webTools } from './web-tools.js';
 import { makeHealTools } from './heal-tools.js';
@@ -17,7 +20,7 @@ import { truncateMiddle } from '../util/json.js';
 import { DEFAULTS } from '../constants.js';
 
 export class ToolRegistry {
-  constructor({ memory, cfg, onSkillActivated, reloadHook }) {
+  constructor({ memory, cfg, onSkillActivated, reloadHook, restartHook, upgradeHook }) {
     this.cfg = cfg;
     this.memory = memory;
     this.tools = new Map();
@@ -28,9 +31,12 @@ export class ToolRegistry {
       ...thinkTools,
       ...fsTools,
       ...shellTools,
+      ...makeVisionTools(),
+      ...makeScreenTools(),
+      ...makeInputTools(),
       ...makeMemoryTools(memory),
       ...makeSkillTools({ onSkillActivated }),
-      ...makeSelfTools({ reloadHook }),
+      ...makeSelfTools({ reloadHook, restartHook, upgradeHook }),
       ...gitTools,
       ...webTools,
       ...makeHealTools(memory),

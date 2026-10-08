@@ -22,13 +22,14 @@ export const DIRS = {
   backups: path.join(LUNA_HOME, 'backups'),
   logs: path.join(LUNA_HOME, 'logs'),
   sessions: path.join(LUNA_HOME, 'sessions'),
+  captures: path.join(LUNA_HOME, 'captures'), // webcam photos & screenshots (Luna's "retina")
 };
 
 export const IDENTITY = {
   name: 'Luna',
-  fullName: 'Luna — Self-Evolving AI Terminal Agent',
-  version: '1.0.0',
-  tagline: 'parallel memory · self-modification · skills · self-healing',
+  fullName: 'Luna — Self-Evolving Embodied AI Terminal Agent',
+  version: '1.1.0',
+  tagline: 'parallel memory · self-modification · skills · self-healing · eyes & hands',
 };
 
 export const DEFAULTS = {

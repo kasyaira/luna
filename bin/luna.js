@@ -7,22 +7,30 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const HELP = `luna — self-evolving AI terminal agent
+const HELP = `luna — self-evolving, embodied AI terminal agent
+
+She sees (webcam + screen), acts (mouse + keyboard), remembers, builds skills,
+rewrites her own code, and repairs herself. Zero config, zero dependencies.
 
 USAGE
   luna                      interactive chat (REPL, streaming)
   luna "<task>"             one-shot: say something
   luna run "<task>"         autonomous agent mode (higher tool budget)
   luna ask "<question>"     quick answer, no tools
-  luna doctor               full self-diagnostic (integrity + providers + memory)
+  luna sensors              body report: display, webcam, mouse/keyboard, vision
+  luna doctor               full self-diagnostic (integrity + providers + memory + body)
   luna health               probe AI endpoints in parallel
   luna providers            list every supported AI endpoint
   luna skill list|show|run|remove <name>
   luna skill install <url>  install a skill from a URL
   luna memory stats|search|forget <q>
   luna self check|snapshot|rollback|backups
+  luna self upgrade [source]  pull the newest code from GitHub + relaunch
   luna config get|set|list
   luna version | help
+
+EYES (see)   : "look at my screen" · "what do you see on the webcam?" · "read this image ~/pic.jpg"
+HANDS (act)  : "open Firefox" · "click the Save button" · "type hello into the search box"
 
 FLAGS
   --provider <id>           force provider (pollinations, groq, ollama, …)
@@ -132,6 +140,25 @@ async function main() {
     return;
   }
 
+  if (command === 'sensors') {
+    const { sensorReport } = await safeImport('../src/util/sensors.js');
+    const { visionStatus } = await safeImport('../src/providers/vision.js');
+    const { loadConfig } = await safeImport('../src/config.js');
+    const cfg = loadConfig(overrides);
+    const s = sensorReport();
+    const v = await visionStatus(cfg).catch(() => ({ available: false, candidates: [], keyless: false }));
+    const yn = (b) => (b ? ansi.brightGreen('yes') : ansi.brightRed('no'));
+    console.log(ansi.bold('LUNA SENSORS — body report'));
+    console.log(`display   : ${s.display.server}${s.display.gui ? '' : ' (no reachable GUI)'}${s.display.wayland ? ' · Wayland quirks apply' : ''}`);
+    console.log(`eyes      : webcam ${s.eyes.cameras.length ? s.eyes.cameras.join(' ') : ansi.dim('none')}${s.eyes.cameraBackend ? '' : ' — capture backend missing'}`);
+    console.log(`  screen  : ${s.eyes.screenshotBackend ? s.eyes.screenshotBackend : ansi.dim('no screenshot backend')}`);
+    console.log(`  vision  : ${v.available ? yn(true) : yn(false)}${v.keyless ? ansi.dim(' (keyless works out of the box)') : ''}`);
+    for (const c of v.candidates.slice(0, 4)) console.log(`            ${ansi.dim('· ' + c)}`);
+    console.log(`hands     : ${s.hands.inputBackend || ansi.dim('no input backend')}${s.hands.canMove ? '' : ' — cannot move mouse yet'}`);
+    for (const h of s.installHints) console.log(`  ${ansi.yellow('!')} ${h}`);
+    return;
+  }
+
   if (command === 'doctor') {
     const { selfCheck } = await safeImport('../src/healing/supervisor.js');
     const { loadConfig } = await safeImport('../src/config.js');
@@ -151,6 +178,11 @@ async function main() {
     for (const p of providers) console.log(`  ${p.ok ? '✓' : '✗'} ${p.id} ${String(p.status).slice(0, 36)}`);
     console.log(`memory    : ${JSON.stringify(mem.banks)}`);
     console.log(`router    : calls=${router.calls} switches=${router.providerSwitches} failures=${router.failures}${router.openCircuits.length ? ' · circuits: ' + router.openCircuits.join(',') : ''}`);
+    try {
+      const { sensorReport } = await safeImport('../src/util/sensors.js');
+      const s = sensorReport();
+      console.log(`body      : display=${s.display.server} · eyes(camera/screen)=${s.eyes.canSee ? '✓' : '✗'}/${s.eyes.canSeeScreen ? '✓' : '✗'} · hands=${s.hands.inputBackend ? '✓ ' + s.hands.inputBackend : '✗'}${s.installHints.length ? ' · run `luna sensors` for fixes' : ''}`);
+    } catch { /* sensors are best-effort */ }
     return;
   }
 
@@ -240,8 +272,31 @@ async function main() {
       console.log(JSON.stringify(rollback(positional[2]), null, 2));
     } else if (sub === 'backups') {
       console.log(listSnapshots(50).join('\n') || '(none)');
+    } else if (sub === 'upgrade') {
+      const { applyUpgrade } = await safeImport('../src/healing/upgrade.js');
+      const { loadConfig } = await safeImport('../src/config.js');
+      const cfg = loadConfig(overrides);
+      const source = positional[2] || 'auto';
+      console.log(ansi.dim(`upgrading from ${source} … (snapshot + integrity check + auto-rollback included)`));
+      const report = await applyUpgrade({ source });
+      for (const s of report.steps) console.log(`  ${/^[✓]/.test(s) ? ansi.brightGreen(s.slice(0, 1)) : ansi.brightRed(s.slice(0, 1))} ${s.slice(2)}`);
+      if (report.ok) {
+        console.log(ansi.brightGreen('upgrade applied — relaunching with fresh code'));
+        const entry = path.join(__dirname, 'luna.js');
+        const { spawn } = await import('node:child_process');
+        const child = spawn(process.execPath, [entry, ...process.argv.slice(2).filter((a) => a !== source)], { stdio: 'inherit', detached: true, cwd: process.cwd(), env: process.env });
+        child.unref();
+        setTimeout(() => process.exit(0), 300);
+      } else if (report.rolledBack) {
+        console.log(ansi.brightRed('upgrade failed — rolled back to the pre-upgrade snapshot, nothing changed'));
+        process.exitCode = 1;
+      } else {
+        console.log(ansi.brightRed('upgrade failed — install state unchanged'));
+        process.exitCode = 1;
+      }
+      return;
     } else {
-      console.log('usage: luna self info | check | snapshot [label] | rollback [label] | backups');
+      console.log('usage: luna self info | check | snapshot [label] | rollback [label] | backups | upgrade [auto|git|github|<zip-url>]');
     }
     return;
   }
